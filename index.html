@@ -262,7 +262,7 @@
         <input id="nameInput" class="field" maxlength="24" placeholder="Como te chamam?" autocomplete="off" />
       </div>
     </div>
-    <button id="createBtn" class="btn btn-primary full">Criar sala e transmitir</button>
+    <button id="createBtn" class="btn btn-primary full">Criar sala</button>
 
     <div class="divider">ou entre numa sala</div>
 
@@ -272,7 +272,7 @@
     </div>
     <div id="homeError" class="error"></div>
 
-    <p class="hint">Quem cria a sala compartilha a tela (precisa ser no computador, pelo Chrome ou Edge). Quem entra assiste e pode falar no canal de voz — funciona até no celular. Use fone pra não dar eco.</p>
+    <p class="hint">Qualquer pessoa na sala pode compartilhar a tela, uma de cada vez (no computador, pelo Chrome ou Edge). Dá pra assistir e falar no canal de voz até pelo celular. Use fone pra não dar eco.</p>
   </div>
 </main>
 
@@ -357,7 +357,8 @@
   let myAvatar = "";
   let localStream = null;
   const guests = new Map(); // host: peerId -> { conn, name }
-  const calls = new Map();  // host: peerId -> MediaConnection
+  const screenCalls = new Map(); // quem transmite: peerId -> chamada de vídeo
+  let sharerId = null, sharerName = ""; // quem está transmitindo agora
   let hostConn = null;      // convidado: conexão com o host
   let currentCall = null;   // convidado: chamada de vídeo recebida
   let roster = [];          // [{id, name, host, voice, muted}]
@@ -495,6 +496,7 @@
     });
     $("voiceCount").textContent = list.filter((p) => p.voice).length + " na voz";
     cleanupVoicePeers();
+    syncScreenCalls();
   }
 
   // ---------- VOZ (malha: todo mundo fala com todo mundo) ----------
@@ -666,8 +668,6 @@
       wireVoiceCall(call.peer, call);
       return;
     }
-    if (isHost) { call.close(); return; }
-
     if (currentCall) { try { currentCall.close(); } catch (e) {} }
     currentCall = call;
     call.answer();
@@ -709,6 +709,7 @@
     $("room").classList.remove("hidden");
     $("codePill").textContent = roomCode;
     history.replaceState(null, "", "?sala=" + roomCode);
+    if (canShare) $("shareBtn").classList.remove("hidden");
   }
 
   // ---------- HOST ----------
@@ -719,13 +720,7 @@
 
     peer.on("open", () => {
       enterRoomUI();
-      setStatus("Sala aberta", true);
-      if (canShare) {
-        $("shareBtn").classList.remove("hidden");
-        showPlaceholder("Clique em “Compartilhar tela” e escolha a aba ou janela do vídeo.");
-      } else {
-        showPlaceholder("Seu navegador não permite compartilhar tela. Use o Chrome ou Edge no computador.");
-      }
+      applySharer(null, "");
       broadcastPeople();
       addMessage("", "Sala criada! Mande o convite pros seus amigos.", true);
     });
@@ -764,9 +759,8 @@
         guests.set(conn.peer, { conn, name, avatar, voice: false, muted: false });
         addMessage("", name + " entrou na sala.", true);
         broadcast({ type: "system", text: name + " entrou na sala." }, conn.peer);
-        conn.send({ type: "welcome", host: myName, sharing: !!localStream });
-        broadcastPeople();
-        if (localStream) callGuest(conn.peer);
+        conn.send({ type: "welcome", host: myName, sharer: sharerId, sharerName });
+        broadcastPeople(); // quem estiver transmitindo liga pro novato ao receber a lista
       } else if (msg.type === "chat") {
         const g = guests.get(conn.peer);
         if (!g) return;
@@ -786,6 +780,11 @@
           broadcast({ type: "system", text: t });
         }
         broadcastPeople();
+      } else if (msg.type === "share") {
+        const g = guests.get(conn.peer);
+        if (!g) return;
+        if (msg.on) setSharer(conn.peer, g.name);
+        else if (sharerId === conn.peer) setSharer(null, "");
       } else if (msg.type === "reaction") {
         const emoji = String(msg.emoji || "").slice(0, 8);
         showReaction(emoji);
@@ -797,10 +796,9 @@
       const g = guests.get(conn.peer);
       if (!g) return;
       guests.delete(conn.peer);
-      const call = calls.get(conn.peer);
-      if (call) { try { call.close(); } catch (e) {} calls.delete(conn.peer); }
       addMessage("", g.name + " saiu.", true);
       broadcast({ type: "system", text: g.name + " saiu." });
+      if (sharerId === conn.peer) setSharer(null, "");
       broadcastPeople();
     };
     conn.on("close", onGone);
@@ -822,65 +820,129 @@
     broadcast({ type: "people", list });
   }
 
-  function callGuest(id) {
-    if (!localStream) return;
-    const old = calls.get(id);
+  // ---------- COMPARTILHAR TELA (qualquer pessoa, uma por vez) ----------
+  // O anfitrião decide quem está transmitindo e avisa todo mundo.
+  function setSharer(id, name) {
+    const changed = id !== sharerId;
+    applySharer(id, name);
+    broadcast({ type: "sharer", id, name });
+    if (changed) {
+      const t = id ? name + " começou a transmitir." : "Transmissão encerrada.";
+      addMessage("", t, true);
+      broadcast({ type: "system", text: t });
+    }
+  }
+
+  function applySharer(id, name) {
+    sharerId = id || null;
+    sharerName = name || "";
+    // outra pessoa assumiu: para a minha transmissão
+    if (sharerId !== peer.id && localStream) stopShare(true);
+    // descarta vídeo de quem não transmite mais
+    if (currentCall && currentCall.peer !== sharerId) {
+      try { currentCall.close(); } catch (e) {}
+      currentCall = null;
+      $("video").srcObject = null;
+      $("unmuteBtn").classList.add("hidden");
+    }
+    if (!sharerId) {
+      setStatus(isHost ? "Sala aberta" : "Conectado", true);
+      if (!localStream) {
+        $("video").srcObject = null;
+        showPlaceholder(canShare
+          ? "Ninguém está transmitindo. Clique em “Compartilhar tela” e escolha a aba do vídeo."
+          : "Ninguém está transmitindo agora.");
+      }
+    } else if (sharerId === peer.id) {
+      setStatus("Você está transmitindo", true);
+    } else {
+      setStatus(sharerName + " está transmitindo", true);
+      if (!currentCall) showPlaceholder("Conectando à tela de " + sharerName + "…");
+    }
+  }
+
+  function callScreen(id) {
+    if (!localStream || id === peer.id) return;
+    const old = screenCalls.get(id);
     if (old) { try { old.close(); } catch (e) {} }
     const call = peer.call(id, localStream, { metadata: { kind: "screen" } });
-    calls.set(id, call);
-    call.on("close", () => { if (calls.get(id) === call) calls.delete(id); });
+    if (!call) return;
+    screenCalls.set(id, call);
+    call.on("close", () => { if (screenCalls.get(id) === call) screenCalls.delete(id); });
+  }
+
+  // Quem transmite liga pra todo mundo da sala (inclusive quem entrar depois)
+  function syncScreenCalls() {
+    if (!localStream || !peer) return;
+    const ids = new Set(roster.map((p) => p.id));
+    roster.forEach((p) => { if (p.id !== peer.id && !screenCalls.has(p.id)) callScreen(p.id); });
+    screenCalls.forEach((c, id) => {
+      if (!ids.has(id)) { try { c.close(); } catch (e) {} screenCalls.delete(id); }
+    });
+  }
+
+  function announceShare(on) {
+    if (isHost) setSharer(on ? peer.id : null, on ? myName : "");
+    else if (hostConn && hostConn.open) hostConn.send({ type: "share", on });
   }
 
   async function startShare() {
+    let stream;
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
+      stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
       });
-      localStream = stream;
-      const vt = stream.getVideoTracks()[0];
-      if (vt && "contentHint" in vt) vt.contentHint = "motion";
-      vt.addEventListener("ended", stopShare);
-
-      const video = $("video");
-      video.srcObject = stream;
-      video.muted = true; // evita eco no computador do anfitrião
-      video.play().catch(() => {});
-      hidePlaceholder();
-
-      if (stream.getAudioTracks().length === 0) {
-        toast("Sem áudio! Compartilhe uma ABA e marque “Compartilhar áudio da aba”.");
-        addMessage("", "Atenção: a transmissão está sem som. Para ter áudio, compartilhe uma aba do Chrome/Edge com a opção de áudio marcada.", true);
-      }
-
-      $("shareBtn").classList.add("hidden");
-      $("stopBtn").classList.remove("hidden");
-      setStatus("Transmitindo", true);
-
-      guests.forEach((_, id) => callGuest(id));
-      broadcast({ type: "share", on: true });
-      addMessage("", "Transmissão iniciada.", true);
     } catch (err) {
       if (err && err.name !== "NotAllowedError") {
         console.error(err);
         toast("Não foi possível compartilhar a tela.");
       }
+      return;
     }
+    // se eu estava assistindo alguém, larga essa transmissão
+    if (currentCall) { try { currentCall.close(); } catch (e) {} currentCall = null; }
+
+    localStream = stream;
+    const vt = stream.getVideoTracks()[0];
+    if (vt && "contentHint" in vt) vt.contentHint = "motion";
+    if (vt) vt.addEventListener("ended", () => stopShare(false));
+
+    const video = $("video");
+    video.srcObject = stream;
+    video.muted = true; // evita eco no próprio computador
+    video.play().catch(() => {});
+    hidePlaceholder();
+    $("unmuteBtn").classList.add("hidden");
+
+    if (stream.getAudioTracks().length === 0) {
+      toast("Sem áudio! Compartilhe uma ABA e marque “Compartilhar áudio da aba”.");
+      addMessage("", "Atenção: sua transmissão está sem som. Para ter áudio, compartilhe uma aba do Chrome/Edge com a opção de áudio marcada.", true);
+    }
+
+    $("shareBtn").classList.add("hidden");
+    $("stopBtn").classList.remove("hidden");
+    setStatus("Você está transmitindo", true);
+
+    announceShare(true);
+    syncScreenCalls();
   }
 
-  function stopShare() {
+  // takenOver = true quando outra pessoa assumiu (não precisa avisar ninguém)
+  function stopShare(takenOver) {
     if (!localStream) return;
-    localStream.getTracks().forEach((t) => t.stop());
+    const mine = localStream;
+    mine.getTracks().forEach((t) => t.stop());
     localStream = null;
-    calls.forEach((c) => { try { c.close(); } catch (e) {} });
-    calls.clear();
-    $("video").srcObject = null;
-    showPlaceholder("Transmissão pausada. Clique em “Compartilhar tela” para voltar.");
+    screenCalls.forEach((c) => { try { c.close(); } catch (e) {} });
+    screenCalls.clear();
+    if ($("video").srcObject === mine) $("video").srcObject = null;
     $("stopBtn").classList.add("hidden");
-    $("shareBtn").classList.remove("hidden");
-    setStatus("Sala aberta", true);
-    broadcast({ type: "share", on: false });
-    addMessage("", "Transmissão encerrada.", true);
+    if (canShare) $("shareBtn").classList.remove("hidden");
+    if (!takenOver) {
+      showPlaceholder("Transmissão encerrada.");
+      announceShare(false);
+    }
   }
 
   // ---------- CONVIDADO ----------
@@ -907,7 +969,7 @@
         hostConn.send({ type: "hello", name: myName, avatar: myAvatar });
         enterRoomUI();
         setStatus("Conectado", true);
-        showPlaceholder("Esperando o anfitrião começar a transmitir…");
+        showPlaceholder("Conectando…");
       });
 
       hostConn.on("data", (msg) => {
@@ -915,25 +977,20 @@
         switch (msg.type) {
           case "welcome":
             addMessage("", "Você entrou na sala de " + msg.host + ".", true);
-            if (!msg.sharing) showPlaceholder("Esperando " + msg.host + " começar a transmitir…");
+            applySharer(msg.sharer || null, msg.sharerName);
             break;
+          case "sharer": applySharer(msg.id || null, msg.name); break;
           case "people": renderPeople(msg.list || []); break;
           case "chat": addMessage(msg.name, msg.text, false, avatarOf(msg.from)); break;
           case "system": addMessage("", msg.text, true); break;
           case "reaction": showReaction(msg.emoji); break;
-          case "share":
-            if (!msg.on) {
-              $("video").srcObject = null;
-              $("unmuteBtn").classList.add("hidden");
-              showPlaceholder("O anfitrião pausou a transmissão.");
-            }
-            break;
         }
       });
 
       hostConn.on("close", () => {
         setStatus("Desconectado", false);
         if (inVoice) leaveVoice();
+        if (localStream) stopShare(true);
         $("video").srcObject = null;
         showPlaceholder("O anfitrião encerrou a sala.");
         addMessage("", "A sala foi encerrada.", true);
@@ -1020,7 +1077,7 @@
   });
 
   $("shareBtn").addEventListener("click", startShare);
-  $("stopBtn").addEventListener("click", stopShare);
+  $("stopBtn").addEventListener("click", () => stopShare(false));
   $("leaveBtn").addEventListener("click", leave);
   $("joinVoiceBtn").addEventListener("click", joinVoice);
   $("leaveVoiceBtn").addEventListener("click", leaveVoice);

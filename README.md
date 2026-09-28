@@ -19,10 +19,11 @@ vercel --prod   # publica em produção
 ```
 
 ## Como usar
-1. Quem vai transmitir abre o site **no computador (Chrome ou Edge)**, coloca o nome e clica em **Criar sala**.
-2. Clica em **Copiar convite** e manda o link pros amigos.
-3. Clica em **Compartilhar tela** → escolha a **aba** onde o vídeo está e marque **"Compartilhar áudio da aba"** (sem isso, vai sem som).
-4. Os amigos abrem o link, colocam o nome e entram — funciona no celular também.
+1. Alguém abre o site, coloca o nome e clica em **Criar sala**.
+2. Clica em **Copiar convite** e manda o link pros amigos, que entram com nome e foto.
+3. **Qualquer pessoa na sala** pode clicar em **Compartilhar tela** (no computador, pelo Chrome ou Edge) → escolha a **aba** onde o vídeo está e marque **"Compartilhar áudio da aba"** (sem isso, vai sem som).
+4. Uma tela por vez: se outra pessoa começar a transmitir, a vez passa pra ela automaticamente.
+5. Quem só assiste pode estar até no celular.
 
 ## Perfil
 Não tem login nem senha: cada um coloca um nome e (opcional) uma foto na tela inicial. Os dois ficam salvos no próprio navegador pra próxima vez. Sem foto, aparece a inicial do nome num círculo colorido.
@@ -36,6 +37,6 @@ Não tem login nem senha: cada um coloca um nome e (opcional) uma foto na tela i
 
 ## Limitações a saber
 - **Netflix, Prime, Disney+ etc.** bloqueiam captura de tela (DRM): quem assiste vê tela preta. Funciona bem com YouTube, arquivos de vídeo locais e players sem DRM.
-- O vídeo sai do PC do anfitrião direto pra cada amigo, então quanto mais gente, mais upload o anfitrião precisa. Para 3–5 pessoas costuma ir bem.
+- O vídeo sai do PC de quem está transmitindo direto pra cada amigo, então quanto mais gente, mais upload essa pessoa precisa. Para 3–5 pessoas costuma ir bem.
 - Em algumas redes muito restritas (4G de certas operadoras, redes corporativas) a conexão direta pode falhar. A solução é adicionar um servidor TURN (ex.: Metered.ca tem plano grátis) na lista `iceServers` do `index.html`.
-- A sala existe enquanto a aba do anfitrião estiver aberta.
+- A sala existe enquanto a aba de quem criou a sala (o anfitrião 👑) estiver aberta.
